@@ -1,0 +1,28 @@
+# Dependencies and Next.js build output
+node_modules/
+.next/
+out/
+
+# Secrets: never commit any environment file
+.env
+.env.*
+!.env.example
+
+# Private archive state and generated derivatives
+data/
+generated/
+tmp/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Local logs and editor state
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# The local skill library is reference material, not application source
+skills/

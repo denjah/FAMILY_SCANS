@@ -1,0 +1,39 @@
+{
+  "name": "family-photo-archive",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=24.11.1 <25"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "index": "tsx scripts/index-archive.ts",
+    "export:screen": "tsx scripts/export-screen-archive.ts",
+    "sync:screen": "tsx scripts/sync-screen-archive.ts",
+    "setup:secrets": "tsx scripts/setup-secrets.ts",
+    "impeccable:detect": "impeccable detect src"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
+    "next": "16.3.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "sharp": "0.34.5",
+    "zustand": "5.0.11",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.13",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.2",
+    "eslint-config-next": "16.3.1",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
+  }
+}
