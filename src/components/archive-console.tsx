@@ -314,7 +314,10 @@ function PhotoDetails({ asset, onCommented }: { asset: Asset; onCommented: () =>
 
   useEffect(() => {
     const stored = localStorage.getItem(`archive-draft:${asset.id}`);
-    if (stored) setDraft(asset.id, stored);
+    if (stored) {
+      setDraft(asset.id, stored);
+      setMessage("Найден черновик с этого устройства. Нажмите «Сохранить воспоминание», чтобы добавить его в общий архив.");
+    }
   }, [asset.id, setDraft]);
 
   useEffect(() => {
