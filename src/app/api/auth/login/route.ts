@@ -28,7 +28,9 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: "Проверьте заполненные поля." }, { status: 400 });
 
   const { invite, displayName, password, admin } = parsed.data;
-  const key = rateLimitKey(clientIp(request), invite || "direct-login");
+  // Keep owner and family login counters separate: an accidental family-password
+  // retry must never lock the owner out of the recovery and audit tools.
+  const key = rateLimitKey(clientIp(request), invite || (admin ? "owner-login" : "family-login"));
   const limit = canAttempt(key);
   if (!limit.allowed) {
     return NextResponse.json(

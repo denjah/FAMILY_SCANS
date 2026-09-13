@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { ArchiveComment, Asset, AssetVersion, CommentKind } from "@/types/archive";
 import { useArchiveStore } from "@/store/archive-store";
@@ -168,7 +169,10 @@ export function ArchiveConsole({ assets, commentedIds, session, generatedAt, can
       </header>
       {session.role === "admin" && <section className="owner-tools" aria-label="Инструменты владельца">
         <div><strong>Инструменты владельца</strong><span>{canSync ? "Синхронизация с веб-архивом доступна на этом компьютере." : "Синхронизация не настроена на этом компьютере."}</span></div>
-        {canSync && <button className="primary-action" onClick={syncArchive} disabled={syncing}>{syncing ? "Синхронизация…" : "Синхронизировать веб-архив"}</button>}
+        <div className="owner-actions">
+          <Link className="secondary-action" href="/owner/comments">Комментарии</Link>
+          {canSync && <button className="primary-action" onClick={syncArchive} disabled={syncing}>{syncing ? "Синхронизация…" : "Синхронизировать веб-архив"}</button>}
+        </div>
       </section>}
       {canSync && syncMessage && <p className="sync-message" role="status">{syncMessage}</p>}
 

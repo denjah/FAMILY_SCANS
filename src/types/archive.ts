@@ -68,3 +68,15 @@ export interface ArchiveComment {
   revision: number;
   mine: boolean;
 }
+
+/** A comment as shown in the owner's audit table. */
+export interface ArchiveCommentRecord {
+  id: string;
+  assetId: string;
+  authorDisplayName: string;
+  kind: CommentKind;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+}

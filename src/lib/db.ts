@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { neon } from "@neondatabase/serverless";
-import type { ArchiveComment, CommentKind } from "@/types/archive";
+import type { ArchiveComment, ArchiveCommentRecord, CommentKind } from "@/types/archive";
 import type { ArchiveSession } from "@/lib/auth";
 import { databasePath, dataRoot } from "@/lib/paths";
 import { hostedArchiveEnabled } from "@/lib/drive";
@@ -133,6 +133,42 @@ export async function commentedAssetIds(): Promise<string[]> {
     SELECT DISTINCT asset_id FROM comments WHERE deleted_at IS NULL
   `).all() as unknown as Array<{ asset_id: string }>;
   return rows.map((row) => row.asset_id);
+}
+
+/** Full comment records are intentionally exposed only to the owner's server page. */
+export async function listAllComments(): Promise<ArchiveCommentRecord[]> {
+  if (!commentStorageAvailable()) return [];
+  if (hostedArchiveEnabled()) {
+    const sql = await hostedSql();
+    const rows = await sql`
+      SELECT id, asset_id, author_display_name, kind, body, created_at, updated_at, revision
+      FROM comments WHERE deleted_at IS NULL ORDER BY created_at DESC
+    ` as Array<Omit<CommentRow, "author_id">>;
+    return rows.map((row) => ({
+      id: row.id,
+      assetId: row.asset_id,
+      authorDisplayName: row.author_display_name,
+      kind: row.kind,
+      body: row.body,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      revision: row.revision,
+    }));
+  }
+  const rows = db().prepare(`
+    SELECT id, asset_id, author_display_name, kind, body, created_at, updated_at, revision
+    FROM comments WHERE deleted_at IS NULL ORDER BY created_at DESC
+  `).all() as unknown as Array<Omit<CommentRow, "author_id">>;
+  return rows.map((row) => ({
+    id: row.id,
+    assetId: row.asset_id,
+    authorDisplayName: row.author_display_name,
+    kind: row.kind,
+    body: row.body,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    revision: row.revision,
+  }));
 }
 
 async function hostedSql() {
