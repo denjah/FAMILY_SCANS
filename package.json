@@ -15,6 +15,8 @@
     "index": "tsx scripts/index-archive.ts",
     "export:screen": "tsx scripts/export-screen-archive.ts",
     "sync:screen": "tsx scripts/sync-screen-archive.ts",
+    "authorize:drive": "tsx scripts/authorize-drive-oauth.ts",
+    "upload:media": "tsx scripts/upload-one-media.ts",
     "setup:secrets": "tsx scripts/setup-secrets.ts",
     "impeccable:detect": "impeccable detect src"
   },

@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 
-export type ViewMode = "grid" | "table";
+export type ViewMode = "mosaic" | "medium" | "compact" | "table";
 
 export interface ArchiveState {
   activeId: string | null;
@@ -36,7 +36,7 @@ export type ArchiveStore = ArchiveState & ArchiveActions;
 export const useArchiveStore = create<ArchiveStore>()(
   subscribeWithSelector((set) => ({
     activeId: null,
-    viewMode: "grid",
+    viewMode: "mosaic",
     search: "",
     branch: "all",
     onlyWithComments: false,

@@ -11,6 +11,10 @@ const ARCHIVE_ROOT = path.resolve(process.env.ARCHIVE_ROOT || "Z:/SCAN");
 const DATA_ROOT = path.resolve(process.env.ARCHIVE_DATA_ROOT || "Z:/SCAN/SYSTEM_WEB/data");
 const INCLUDE_ROOTS = ["ALENA", "DAN", "DEN", "PAPA", "SCANS_2025", "БАБУШКА"];
 const BRANCH_LABELS: Record<string, string> = { ALENA: "МАМА" };
+const HIDDEN_FROM_CATALOG = new Set([
+  "PAPA/Илан_Трудовая-книжка.jpg",
+  "PAPA/Трудовые книжки_VERT.pdf",
+]);
 const PHOTO_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff", ".heic", ".heif"]);
 const DOCUMENT_EXTENSIONS = new Set([".pdf"]);
 const SENSITIVE_PATTERN = /(паспорт|pase|passport|удостовер|военн|трудов|birth|рожд|аттестат|atestat|диплом|билет|certificate|свидетельств)/iu;
@@ -80,7 +84,7 @@ function embeddedNotesByPath(): Map<string, EmbeddedNote[]> {
   return result;
 }
 
-/** Read the curator-written descriptions from the ALENA batch files.
+/** Read the curator-written descriptions from the batch files.
  * The files are data exports: only their front matter and Markdown text are used.
  */
 function batchDescriptionsByPath(): Map<string, BatchDescription> {
@@ -88,7 +92,7 @@ function batchDescriptionsByPath(): Map<string, BatchDescription> {
   const batchesDirectory = path.join(ARCHIVE_ROOT, "_BATCHES");
   try {
     const files = fsSync.readdirSync(batchesDirectory)
-      .filter((file) => /^ALENA_batch_\d+\.md$/iu.test(file))
+      .filter((file) => /_batch_\d+\.md$/iu.test(file))
       .sort((a, b) => a.localeCompare(b, "en"));
     for (const file of files) {
       const source = fsSync.readFileSync(path.join(batchesDirectory, file), "utf8");
@@ -107,7 +111,25 @@ function batchDescriptionsByPath(): Map<string, BatchDescription> {
           .replace(/^={3,}.*$/gmu, "")
           .replaceAll(/\s+/g, " ")
           .trim();
-        result.set(masterFile.replaceAll("\\", "/"), { title, caption: prose || imageAlt });
+        const desc: BatchDescription = { title, caption: prose || imageAlt };
+        const normMaster = masterFile.replaceAll("\\", "/");
+        result.set(normMaster, desc);
+
+        // Also register derivatives listed in front matter
+        const derivativesMatch = frontMatter.match(/^derivatives:\s*\r?\n([\s\S]*?)(?=^[a-z_]+:|$)/m);
+        if (derivativesMatch) {
+          const derivLines = [...derivativesMatch[1].matchAll(/^\s*-\s*["']?([^"'\r\n]+)["']?/gm)].map((m) => m[1].trim());
+          for (const deriv of derivLines) {
+            result.set(deriv.replaceAll("\\", "/"), desc);
+          }
+        }
+
+        // Register under groupKey fallback for _GPT and derivative selection
+        const dir = path.dirname(normMaster).normalize("NFC").toLocaleLowerCase("ru");
+        const groupKey = `${dir}\u0000${versionGroupKey(path.basename(normMaster))}`;
+        if (!result.has(`GROUP:${groupKey}`)) {
+          result.set(`GROUP:${groupKey}`, desc);
+        }
       }
     }
   } catch {
@@ -121,12 +143,8 @@ function stableId(relativePath: string): string {
   return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 24);
 }
 
-function titleFromName(fileName: string): string {
-  return path.basename(fileName, path.extname(fileName)).replaceAll(/[-_]+/g, " ").replaceAll(/\s+/g, " ").trim();
-}
-
 function versionHint(fileName: string): string | null {
-  const match = fileName.match(/(?:^|[-_])(2x|4x|c\d*|col\d*|topaz|faceai|rest(?:ored)?|recovered|hires|lowres|up\d*|u\d*|prw)(?:[-_.]|$)/iu);
+  const match = fileName.match(/(?:^|[-_])(gpt|2x|4x|c\d*|col\d*|topaz|faceai|rest(?:ored)?|recovered|hires|lowres|up\d*|u\d*|prw)(?:[-_.]|$)/iu);
   return match?.[1]?.toUpperCase() || null;
 }
 
@@ -135,7 +153,7 @@ function versionGroupKey(fileName: string): string {
   // Editing tools append chains such as "-topaz-denoise-enhance-4x-faceai".
   // Remove the full chain from its first explicit processing marker, but keep
   // numbered scan names intact when they have no such marker.
-  const processingMarker = /(?:^|[\s_.-])(?:\d+(?:\.\d+)?x[cv]?|topaz|denoise|enhance|faceai|sharpen|remove|exposure|c\d*|col\d*|rest(?:ored)?|recovered|hires|lowres|up\d*|u\d*|prw|video|v)(?=$|[\s_.!-])/giu;
+  const processingMarker = /(?:^|[\s_.-])(?:gpt|\d+(?:\.\d+)?x[cv]?|topaz|denoise|enhance|faceai|sharpen|remove|exposure|c\d*|col\d*|rest(?:ored)?|recovered|hires|lowres|up\d*|u\d*|prw|video|v)(?=$|[\s_.!-])/giu;
   const marker = processingMarker.exec(stem);
   const base = marker ? stem.slice(0, marker.index) : stem;
   return base.replace(/[\s_.-]+$/u, "").toLocaleLowerCase("ru");
@@ -153,12 +171,62 @@ function asVersion(asset: Asset): AssetVersion {
   };
 }
 
+type BridgeStack = { fileNames: string[]; previewFileName: string | null };
+type BridgeLayout = { order: string[]; stacks: BridgeStack[] };
+
+function fileNameFromBridgeKey(key: string): string {
+  // Bridge stores an item as "filename" followed by a fourteen-digit file timestamp.
+  return key.replace(/\d{14}$/u, "");
+}
+
+function bridgeKeys(fragment: string): string[] {
+  return [...fragment.matchAll(/<item\s+key=['"]([^'"]+)['"]\s*\/>/giu)].map((match) => fileNameFromBridgeKey(match[1]));
+}
+
+function bridgeLayout(directory: string): BridgeLayout {
+  try {
+    const source = fsSync.readFileSync(path.join(directory, ".BridgeSort"), "utf8");
+    const rootFiles = source.match(/<dirinfo>\s*<files>([\s\S]*?)<\/files>/iu)?.[1] || "";
+    const stacks = [...source.matchAll(/<stack\b([^>]*)>([\s\S]*?)<\/stack>/giu)].map((match) => {
+      const paused = match[1].match(/\bpausedCell=['"]([^'"]+)['"]/iu)?.[1];
+      return { fileNames: bridgeKeys(match[2]), previewFileName: paused ? fileNameFromBridgeKey(paused) : null };
+    }).filter((stack) => stack.fileNames.length > 1);
+    return { order: bridgeKeys(rootFiles), stacks };
+  } catch {
+    // Bridge metadata is optional. Folders without it remain indexable.
+    return { order: [], stacks: [] };
+  }
+}
+
+function bridgeLayouts(): Map<string, BridgeLayout> {
+  const layouts = new Map<string, BridgeLayout>();
+  function visit(directory: string): void {
+    try {
+      if (fsSync.existsSync(path.join(directory, ".BridgeSort"))) {
+        const relativeDirectory = path.relative(ARCHIVE_ROOT, directory).replaceAll("\\", "/").normalize("NFC");
+        layouts.set(relativeDirectory, bridgeLayout(directory));
+      }
+      for (const entry of fsSync.readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory()) visit(path.join(directory, entry.name));
+      }
+    } catch {
+      // A folder can be moved while Bridge saves its metadata. Other folders
+      // still remain available for the current indexing run.
+    }
+  }
+  for (const root of INCLUDE_ROOTS) visit(path.join(ARCHIVE_ROOT, root));
+  return layouts;
+}
+
 function versionScore(asset: Asset): number {
   const name = asset.fileName;
   const pixels = (asset.technicalMetadata.width || 0) * (asset.technicalMetadata.height || 0);
+  // `_GPT` marks the curator-approved current restoration. Keep it first even
+  // when an earlier file happens to have more pixels or a newer filesystem date.
+  const gptBonus = /(?:^|[-_])gpt(?:[-_.]|$)/iu.test(name) ? 1e18 : 0;
   const colorBonus = /(?:^|[-_])(c\d*|col\d*)(?:[-_.]|$)/iu.test(name) ? 1e15 : 0;
   const explicitVersion = asset.versionHint ? 1e12 : 0;
-  return colorBonus + explicitVersion + pixels * 100 + asset.technicalMetadata.bytes + Date.parse(asset.technicalMetadata.modifiedAt) / 1e6;
+  return gptBonus + colorBonus + explicitVersion + pixels * 100 + asset.technicalMetadata.bytes + Date.parse(asset.technicalMetadata.modifiedAt) / 1e6;
 }
 
 function groupVersions(assets: Asset[]): Asset[] {
@@ -173,7 +241,48 @@ function groupVersions(assets: Asset[]): Asset[] {
   return [...groups.values()].map((group) => {
     group.sort((a, b) => versionScore(b) - versionScore(a) || a.fileName.localeCompare(b.fileName, "ru"));
     const selected = group[0];
+    if (!selected.caption) {
+      const donor = group.find((member) => member.caption && member.caption.trim().length > 0);
+      if (donor) {
+        selected.title = donor.title;
+        selected.caption = donor.caption;
+      }
+    }
     return { ...selected, versions: group.map(asVersion) };
+  });
+}
+
+function applyBridgeStacks(assets: Asset[]): Asset[] {
+  const layouts = bridgeLayouts();
+  const assetByPath = new Map(assets.map((asset) => [asset.relativePath.normalize("NFC"), asset]));
+  const stacked = new Set<string>();
+  const cards: Asset[] = [];
+
+  for (const [directory, layout] of layouts) {
+    for (const stack of layout.stacks) {
+      const members = stack.fileNames.map((fileName) => assetByPath.get(`${directory}/${fileName}`.normalize("NFC"))).filter((asset): asset is Asset => Boolean(asset));
+      if (members.length < 2) continue;
+      const preview = members.find((asset) => asset.fileName === stack.previewFileName) || members[0];
+      const orderedMembers = [preview, ...members.filter((asset) => asset.id !== preview.id)];
+      orderedMembers.forEach((asset) => stacked.add(asset.id));
+      if (!preview.caption) {
+        const donor = orderedMembers.find((member) => member.caption && member.caption.trim().length > 0 && versionGroupKey(member.fileName) === versionGroupKey(preview.fileName))
+          || orderedMembers.find((member) => member.caption && member.caption.trim().length > 0);
+        if (donor) {
+          preview.title = donor.title;
+          preview.caption = donor.caption;
+        }
+      }
+      cards.push({ ...preview, versions: orderedMembers.map(asVersion), bridgeStack: true });
+    }
+  }
+
+  cards.push(...groupVersions(assets.filter((asset) => !stacked.has(asset.id))));
+  return cards.filter((asset) => ![asset, ...(asset.versions || [])].some((version) => HIDDEN_FROM_CATALOG.has(version.relativePath))).sort((a, b) => {
+    // Bridge decides membership and the cover; file names decide the stable
+    // catalogue order so a thumbnail finishing later never appears elsewhere.
+    const sortKey = (asset: Asset) => (asset.versions?.map((version) => version.fileName).sort((left, right) => left.localeCompare(right, "ru", { numeric: true, sensitivity: "base" }))[0] || asset.fileName);
+    return sortKey(a).localeCompare(sortKey(b), "ru", { numeric: true, sensitivity: "base" }) || a.fileName.localeCompare(b.fileName, "ru");
   });
 }
 
@@ -199,6 +308,9 @@ async function collectFiles(root: string): Promise<string[]> {
 }
 
 async function indexOne(absolutePath: string, notesByPath: Map<string, EmbeddedNote[]>, batchDescriptions: Map<string, BatchDescription>): Promise<{ asset: Asset; error?: { relativePath: string; message: string } }> {
+  // Keep parsing batch files for archival compatibility, while suppressing
+  // their generated prose in the public catalogue.
+  void batchDescriptions;
   const relativePath = path.relative(ARCHIVE_ROOT, absolutePath);
   const fileName = path.basename(absolutePath);
   const extension = path.extname(fileName).toLowerCase();
@@ -231,14 +343,16 @@ async function indexOne(absolutePath: string, notesByPath: Map<string, EmbeddedN
   const sensitive = SENSITIVE_PATTERN.test(relativePath);
   const kind: AssetKind = sensitive || DOCUMENT_EXTENSIONS.has(extension) ? "document" : "photo";
   const normalizedPath = relativePath.replaceAll("\\", "/");
-  const batchDescription = batchDescriptions.get(normalizedPath);
   const asset: Asset = {
     id: stableId(relativePath),
     relativePath: normalizedPath,
     fileName,
     kind,
-    title: batchDescription?.title || titleFromName(fileName),
-    caption: batchDescription?.caption || "",
+    // Curator descriptions remain in _BATCHES for archival work, but the
+    // catalogue deliberately displays only a file name until a person adds
+    // information in the card itself.
+    title: fileName,
+    caption: "",
     branch: BRANCH_LABELS[relativePath.split(path.sep)[0]] || relativePath.split(path.sep)[0] || "Архив",
     technicalMetadata: {
       extension: extension.slice(1).toUpperCase(),
@@ -279,7 +393,7 @@ async function main(): Promise<void> {
     }
   });
   await Promise.all(workers);
-  const visibleAssets = groupVersions(assets);
+  const visibleAssets = applyBridgeStacks(assets);
   const manifest: ArchiveManifest = {
     generatedAt: new Date().toISOString(),
     archiveRoot: ARCHIVE_ROOT,
@@ -293,7 +407,7 @@ async function main(): Promise<void> {
   await fs.writeFile(target, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(DATA_ROOT, "index-errors.json"), `${JSON.stringify(errors, null, 2)}\n`, "utf8");
   console.log(`Index complete: ${visibleAssets.length} archive cards from ${assets.length} files, ${errors.length} metadata errors.`);
-  console.log(`Loaded ${batchDescriptions.size} ALENA descriptions from batch files.`);
+  console.log(`Read ${batchDescriptions.size} archived descriptions; public captions are disabled.`);
 }
 
 main().catch((error) => {

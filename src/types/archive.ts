@@ -46,6 +46,8 @@ export interface Asset {
   embeddedNotes?: EmbeddedNote[];
   /** The selected version is always first; the rest are earlier alternatives. */
   versions?: AssetVersion[];
+  /** True when Adobe Bridge grouped these files into one curator-made stack. */
+  bridgeStack?: boolean;
 }
 
 export interface ArchiveManifest {
@@ -79,4 +81,13 @@ export interface ArchiveCommentRecord {
   createdAt: string;
   updatedAt: string;
   revision: number;
+}
+
+/** Curator-entered information shown with a photograph. */
+export interface AssetMetadata {
+  assetId: string;
+  names: string;
+  year: string;
+  caption: string;
+  updatedAt: string;
 }

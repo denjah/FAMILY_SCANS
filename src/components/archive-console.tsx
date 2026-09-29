@@ -3,12 +3,13 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { ArchiveComment, Asset, AssetVersion, CommentKind } from "@/types/archive";
+import type { ArchiveComment, Asset, AssetMetadata, AssetVersion, CommentKind } from "@/types/archive";
 import { useArchiveStore } from "@/store/archive-store";
 
 interface Props {
   assets: Asset[];
   commentedIds: string[];
+  metadata: AssetMetadata[];
   session: { displayName: string; role: "contributor" | "admin" };
   generatedAt: string;
   canSync: boolean;
@@ -23,6 +24,7 @@ const COMMENT_KINDS: Array<{ value: CommentKind; label: string }> = [
 ];
 const INITIAL_GRID_ITEMS = 72;
 const GRID_STEP = 72;
+const INITIAL_IMAGE_BATCH = 36;
 
 function versionsFor(asset: Asset): AssetVersion[] {
   return asset.versions?.length ? asset.versions : [{ id: asset.id, relativePath: asset.relativePath, fileName: asset.fileName, technicalMetadata: asset.technicalMetadata, webPreview: asset.webPreview, versionHint: asset.versionHint }];
@@ -43,7 +45,26 @@ function mediaUrl(assetId: string, variant: "thumb" | "screen" | "full", page?: 
   return `/api/media/${encodeURIComponent(assetId)}/${variant}${page === undefined ? "" : `?page=${page}`}`;
 }
 
-export function ArchiveConsole({ assets, commentedIds, session, generatedAt, canSync }: Props) {
+type AlbumGroup = { key: string; title: string; assets: Asset[] };
+
+function albumsForBranch(assets: Asset[], branch: string): AlbumGroup[] {
+  const priority = branch === "МАМА" ? ["MAMA", "mama_piter", "NASTJA"] : [];
+  const byFolder = new Map<string, Asset[]>();
+  for (const asset of assets) {
+    const parts = asset.relativePath.replaceAll("\\", "/").split("/");
+    const folder = parts.length <= 2 ? "" : parts[1];
+    const group = byFolder.get(folder);
+    if (group) group.push(asset); else byFolder.set(folder, [asset]);
+  }
+  const order = ["", ...priority, ...[...byFolder.keys()].filter((folder) => folder && !priority.includes(folder)).sort((a, b) => a.localeCompare(b, "ru"))];
+  return order.flatMap((folder) => {
+    const group = byFolder.get(folder);
+    if (!group?.length) return [];
+    return [{ key: folder || "root", title: folder || branch, assets: group }];
+  });
+}
+
+export function ArchiveConsole({ assets, commentedIds, metadata, session, generatedAt, canSync }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeId = useArchiveStore((state) => state.activeId);
@@ -60,17 +81,13 @@ export function ArchiveConsole({ assets, commentedIds, session, generatedAt, can
   const setOnlyWithComments = useArchiveStore((state) => state.setOnlyWithComments);
   const setSlideshow = useArchiveStore((state) => state.setSlideshow);
   const [knownCommented, setKnownCommented] = useState(() => new Set(commentedIds));
+  const [metadataById, setMetadataById] = useState(() => new Map(metadata.map((item) => [item.assetId, item])));
   const [gridLimit, setGridLimit] = useState(INITIAL_GRID_ITEMS);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
-
-  useEffect(() => {
-    const mamaDescriptions = assets
-      .filter((asset) => asset.branch === "МАМА" && asset.caption)
-      .map(({ id, title, fileName, caption }) => ({ id, title, fileName, caption }));
-    console.info("[Фотоархив] Описания альбома «МАМА»", mamaDescriptions);
-  }, [assets]);
+  const [initialLoaded, setInitialLoaded] = useState(0);
+  const settledInitial = useRef(new Set<string>());
 
   const branches = useMemo(() => Array.from(new Set(assets.map((asset) => asset.branch))).sort((a, b) => a.localeCompare(b, "ru")), [assets]);
   const filtered = useMemo(() => {
@@ -79,10 +96,27 @@ export function ArchiveConsole({ assets, commentedIds, session, generatedAt, can
       if (branch !== "all" && asset.branch !== branch) return false;
       if (onlyWithComments && !knownCommented.has(asset.id)) return false;
       if (!query) return true;
-      return `${asset.title} ${asset.fileName} ${asset.branch}`.toLocaleLowerCase("ru").includes(query);
+      const manual = metadataById.get(asset.id);
+      return `${asset.fileName} ${asset.branch} ${manual?.names || ""} ${manual?.year || ""} ${manual?.caption || ""}`.toLocaleLowerCase("ru").includes(query);
     });
-  }, [assets, branch, knownCommented, onlyWithComments, search]);
+  }, [assets, branch, knownCommented, metadataById, onlyWithComments, search]);
   const visibleGrid = filtered.slice(0, gridLimit);
+  const albumGroups = useMemo(() => ["МАМА", "PAPA", "DEN"].includes(branch) ? albumsForBranch(visibleGrid, branch) : [], [branch, visibleGrid]);
+  const initialImageIds = useMemo(() => new Set(visibleGrid.slice(0, INITIAL_IMAGE_BATCH).filter((asset) => asset.webPreview).map((asset) => asset.id)), [visibleGrid]);
+  const initialImageKey = [...initialImageIds].join(",");
+  const initialImageTotal = initialImageIds.size;
+  const gridReady = initialImageTotal === 0 || initialLoaded >= initialImageTotal;
+
+  useEffect(() => {
+    settledInitial.current.clear();
+    setInitialLoaded(0);
+  }, [initialImageKey]);
+
+  const markInitialImageSettled = useCallback((assetId: string) => {
+    if (!initialImageIds.has(assetId) || settledInitial.current.has(assetId)) return;
+    settledInitial.current.add(assetId);
+    setInitialLoaded((current) => current + 1);
+  }, [initialImageIds]);
 
   useEffect(() => setGridLimit(INITIAL_GRID_ITEMS), [branch, onlyWithComments, search]);
 
@@ -179,7 +213,7 @@ export function ArchiveConsole({ assets, commentedIds, session, generatedAt, can
       <section className="control-board" aria-label="Управление каталогом">
         <label className="search-field">
           <span>Поиск</span>
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Имя файла, ветвь, название" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Имя файла, имя человека, год" />
         </label>
         <label>
           <span>Семейная ветвь</span>
@@ -189,7 +223,9 @@ export function ArchiveConsole({ assets, commentedIds, session, generatedAt, can
           </select>
         </label>
         <div className="view-switch" aria-label="Вид каталога">
-          <button aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}>Сетка</button>
+          <button aria-pressed={viewMode === "mosaic"} onClick={() => setViewMode("mosaic")}>Мозаика</button>
+          <button aria-pressed={viewMode === "medium"} onClick={() => setViewMode("medium")}>Средние</button>
+          <button aria-pressed={viewMode === "compact"} onClick={() => setViewMode("compact")}>Мелкие</button>
           <button aria-pressed={viewMode === "table"} onClick={() => setViewMode("table")}>Таблица</button>
         </div>
         <label className="check-field">
@@ -203,17 +239,33 @@ export function ArchiveConsole({ assets, commentedIds, session, generatedAt, can
         <span>Индекс обновлен {new Date(generatedAt).toLocaleString("ru-RU")}</span>
       </div>
 
-      {viewMode === "grid" ? (
-        <section className="photo-grid" aria-label="Фотографии">
-          {visibleGrid.map((asset, index) => <GridPhotoCard key={asset.id} asset={asset} index={index} onOpen={openAsset} />)}
-        </section>
+      {viewMode !== "table" ? (
+        <>
+          {!gridReady && <section className="catalog-loader" role="status" aria-live="polite" aria-label="Загрузка первых фотографий">
+            <div><span>Подготавливаем сетку</span><strong>{initialLoaded} / {initialImageTotal}</strong></div>
+            <span className="catalog-loader-track"><span style={{ width: `${initialImageTotal ? (initialLoaded / initialImageTotal) * 100 : 100}%` }} /></span>
+          </section>}
+          {["МАМА", "PAPA", "DEN"].includes(branch) ? <div className="album-list" aria-label={`Альбомы ${branch}`}>
+            {albumGroups.map((album) => <section className={`album-section ${gridReady ? "is-ready" : "is-loading"}`} key={album.key} aria-labelledby={`album-${album.key}`}>
+              <h2 id={`album-${album.key}`}>{album.title}</h2>
+              <div className={`photo-grid ${viewMode}`}>
+                {album.assets.map((asset) => {
+                  const absoluteIndex = visibleGrid.indexOf(asset);
+                  return <GridPhotoCard key={asset.id} asset={asset} metadataById={metadataById} index={absoluteIndex} priority={absoluteIndex < INITIAL_IMAGE_BATCH} onPreviewSettled={markInitialImageSettled} onOpen={openAsset} />;
+                })}
+              </div>
+            </section>)}
+          </div> : <section className={`photo-grid ${viewMode} ${gridReady ? "is-ready" : "is-loading"}`} aria-label="Фотографии" aria-busy={!gridReady}>
+            {visibleGrid.map((asset, index) => <GridPhotoCard key={asset.id} asset={asset} metadataById={metadataById} index={index} priority={index < INITIAL_IMAGE_BATCH} onPreviewSettled={markInitialImageSettled} onOpen={openAsset} />)}
+          </section>}
+        </>
       ) : (
         <div className="table-wrap">
           <table className="asset-table">
             <thead><tr><th>Фотография</th><th>Ветвь</th><th>Формат</th><th>Разрешение</th><th>Размер</th><th>История</th></tr></thead>
             <tbody>{filtered.map((asset) => (
               <tr key={asset.id} onClick={() => openAsset(asset.id)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && openAsset(asset.id)}>
-                <td>{asset.title}</td><td>{asset.branch}</td><td>{asset.technicalMetadata.extension}</td>
+                <td>{asset.fileName}</td><td>{asset.branch}</td><td>{asset.technicalMetadata.extension}</td>
                 <td>{asset.technicalMetadata.width || "?"}×{asset.technicalMetadata.height || "?"}</td>
                 <td>{formatBytes(asset.technicalMetadata.bytes)}</td><td>{knownCommented.has(asset.id) ? "Есть" : "—"}</td>
               </tr>
@@ -221,39 +273,56 @@ export function ArchiveConsole({ assets, commentedIds, session, generatedAt, can
           </table>
         </div>
       )}
-      {viewMode === "grid" && visibleGrid.length < filtered.length && <div className="load-more"><button className="primary-action" onClick={() => setGridLimit((current) => current + GRID_STEP)}>Показать ещё {Math.min(GRID_STEP, filtered.length - visibleGrid.length)}</button></div>}
+      {viewMode !== "table" && visibleGrid.length < filtered.length && <div className="load-more"><button className="primary-action" onClick={() => setGridLimit((current) => current + GRID_STEP)}>Показать ещё {Math.min(GRID_STEP, filtered.length - visibleGrid.length)}</button></div>}
 
       {!filtered.length && <section className="empty-state"><h2>Ничего не найдено</h2><p>Измените поиск или фильтр.</p></section>}
-      {active && <PhotoViewer asset={active} initialVersionId={activeVersionId} position={Math.max(0, activeIndex) + 1} total={filtered.length || assets.length} slideshow={slideshow} onSetSlideshow={setSlideshow} onClose={() => openAsset(null)} onPrevious={() => move(-1)} onNext={() => move(1)} onCommented={() => setKnownCommented((current) => new Set(current).add(active.id))} />}
+      {active && <PhotoViewer asset={active} metadataById={metadataById} initialVersionId={activeVersionId} position={Math.max(0, activeIndex) + 1} total={filtered.length || assets.length} slideshow={slideshow} onSetSlideshow={setSlideshow} onClose={() => openAsset(null)} onPrevious={() => move(-1)} onNext={() => move(1)} onCommented={() => setKnownCommented((current) => new Set(current).add(active.id))} onMetadataSaved={(item) => setMetadataById((current) => new Map(current).set(item.assetId, item))} />}
     </main>
   );
 }
 
-function GridPhotoCard({ asset, index, onOpen }: { asset: Asset; index: number; onOpen: (id: string, versionId?: string) => void }) {
+function GridPhotoCard({ asset, metadataById, index, priority, onPreviewSettled, onOpen }: { asset: Asset; metadataById: Map<string, AssetMetadata>; index: number; priority: boolean; onPreviewSettled: (assetId: string) => void; onOpen: (id: string, versionId?: string) => void }) {
   const versions = versionsFor(asset);
   const [versionId, setVersionId] = useState(versions[0].id);
   const selectedVersion = versions.find((version) => version.id === versionId) || versions[0];
+  const metadata = metadataById.get(selectedVersion.id) || metadataById.get(asset.id);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const ratio = selectedVersion.technicalMetadata.width && selectedVersion.technicalMetadata.height ? `${selectedVersion.technicalMetadata.width} / ${selectedVersion.technicalMetadata.height}` : "4 / 3";
 
   useEffect(() => setVersionId(versions[0].id), [asset.id, versions]);
+  useEffect(() => setImageLoaded(false), [selectedVersion.id]);
+
+  function imageSettled() {
+    setImageLoaded(true);
+    if (priority) onPreviewSettled(asset.id);
+  }
 
   return <article className="photo-card" style={{ "--order": Math.min(index, 12) } as React.CSSProperties}>
+    {versions.length > 1 && <label className="grid-version-slider">
+      <span>{asset.bridgeStack ? "Фото в группе" : "Вариант"}</span>
+      <input type="range" min="0" max={versions.length - 1} value={versions.findIndex((version) => version.id === selectedVersion.id)} onChange={(event) => setVersionId(versions[Number(event.target.value)].id)} aria-label={asset.bridgeStack ? "Фото в группе" : "Вариант фотографии"} />
+      <small>{versions.findIndex((version) => version.id === selectedVersion.id) + 1} / {versions.length}</small>
+    </label>}
     <button className="photo-card-open" onClick={() => onOpen(asset.id, selectedVersion.id)}>
-      <span className="photo-frame">
+      <span className={`photo-frame ${imageLoaded ? "is-loaded" : ""}`} style={{ aspectRatio: ratio }}>
         {selectedVersion.webPreview ? <>
           {/* eslint-disable-next-line @next/next/no-img-element -- the authenticated route already serves a resized derivative */}
-          <img src={mediaUrl(selectedVersion.id, "thumb")} loading="lazy" alt={asset.title || "Архивная фотография"} />
+          <img src={mediaUrl(selectedVersion.id, "thumb")} loading={priority ? "eager" : "lazy"} fetchPriority={priority ? "high" : "auto"} decoding="async" onLoad={imageSettled} onError={imageSettled} alt={selectedVersion.fileName} />
         </> : <span className="unavailable">Нет превью</span>}
-        {asset.caption && <span className="photo-description">{asset.caption}</span>}
+        {(metadata?.caption || metadata?.names || metadata?.year) && <span className="photo-description">
+          {metadata.caption && <strong>{metadata.caption}</strong>}
+          {metadata.names && <span>{metadata.names}</span>}
+          {metadata.year && <span>{metadata.year}</span>}
+        </span>}
       </span>
-      <span className="photo-card-copy"><span className="photo-title-row"><strong>{asset.title}</strong><small className="file-name">{selectedVersion.fileName}</small></span><small>{asset.branch} · {selectedVersion.technicalMetadata.width || "?"}×{selectedVersion.technicalMetadata.height || "?"}</small></span>
+      <span className="photo-card-copy"><strong>{selectedVersion.fileName}</strong></span>
     </button>
-    {versions.length > 1 && <label className="grid-version-picker">Вариант <select value={selectedVersion.id} onChange={(event) => setVersionId(event.target.value)}>{versions.map((version, versionIndex) => <option key={version.id} value={version.id}>{versionIndex === 0 ? "Основной" : `Версия ${versionIndex + 1}`}</option>)}</select></label>}
   </article>;
 }
 
-function PhotoViewer({ asset, initialVersionId, position, total, slideshow, onSetSlideshow, onClose, onPrevious, onNext, onCommented }: {
+function PhotoViewer({ asset, metadataById, initialVersionId, position, total, slideshow, onSetSlideshow, onClose, onPrevious, onNext, onCommented, onMetadataSaved }: {
   asset: Asset; initialVersionId: string | null; position: number; total: number; slideshow: boolean; onSetSlideshow: (value: boolean) => void;
-  onClose: () => void; onPrevious: () => void; onNext: () => void; onCommented: () => void;
+  metadataById: Map<string, AssetMetadata>; onClose: () => void; onPrevious: () => void; onNext: () => void; onCommented: () => void; onMetadataSaved: (metadata: AssetMetadata) => void;
 }) {
   const viewerRef = useRef<HTMLDivElement>(null);
   const zoom = useArchiveStore((state) => state.zoom);
@@ -263,7 +332,8 @@ function PhotoViewer({ asset, initialVersionId, position, total, slideshow, onSe
   const versions = versionsFor(asset);
   const [versionId, setVersionId] = useState(initialVersionId || versions[0].id);
   const selectedVersion = versions.find((version) => version.id === versionId) || versions[0];
-  const displayedAsset: Asset = { ...asset, ...selectedVersion, id: asset.id };
+  const displayedAsset: Asset = { ...asset, ...selectedVersion };
+  const metadata = metadataById.get(selectedVersion.id) || metadataById.get(asset.id);
   const isPdf = asset.technicalMetadata.mimeType === "application/pdf";
 
   useEffect(() => setVersionId(initialVersionId || versions[0].id), [asset.id, initialVersionId, versions]);
@@ -283,7 +353,7 @@ function PhotoViewer({ asset, initialVersionId, position, total, slideshow, onSe
           <button onClick={() => setZoom(1)}>По размеру</button>
           <button onClick={() => setZoom(zoom + 0.25)} aria-label="Увеличить">+</button>
           <button onClick={() => onSetSlideshow(!slideshow)}>{slideshow ? "Пауза" : "Слайд-шоу"}</button>
-          {!isPdf && versions.length > 1 && <label className="version-slider">Версия <input type="range" min="0" max={versions.length - 1} value={versions.findIndex((version) => version.id === selectedVersion.id)} onChange={(event) => setVersionId(versions[Number(event.target.value)].id)} aria-label="Версия фотографии" /><span>{versions.findIndex((version) => version.id === selectedVersion.id) + 1} / {versions.length}</span></label>}
+          {!isPdf && versions.length > 1 && <label className="version-slider">{asset.bridgeStack ? "Фото в группе" : "Версия"} <input type="range" min="0" max={versions.length - 1} value={versions.findIndex((version) => version.id === selectedVersion.id)} onChange={(event) => setVersionId(versions[Number(event.target.value)].id)} aria-label={asset.bridgeStack ? "Фото в группе" : "Версия фотографии"} /><span>{versions.findIndex((version) => version.id === selectedVersion.id) + 1} / {versions.length}</span></label>}
           <button onClick={() => setDetailsOpen(!detailsOpen)}>{detailsOpen ? "Скрыть сведения" : "Сведения"}</button>
           <button onClick={fullscreen}>Полный экран</button>
           <button onClick={onClose}>Закрыть</button>
@@ -295,7 +365,7 @@ function PhotoViewer({ asset, initialVersionId, position, total, slideshow, onSe
         {isPdf ? <PdfPages asset={asset} /> : <img key={selectedVersion.id} src={mediaUrl(selectedVersion.id, zoom > 1.5 ? "full" : "screen")} alt={asset.title} style={{ transform: `scale(${zoom})` }} />}
       </div>
       <button className="viewer-arrow next" onClick={onNext} aria-label="Следующая фотография">›</button>
-      {detailsOpen && <PhotoDetails key={asset.id} asset={displayedAsset} onCommented={onCommented} />}
+      {detailsOpen && <PhotoDetails key={selectedVersion.id} asset={displayedAsset} metadata={metadata} onCommented={onCommented} onMetadataSaved={onMetadataSaved} />}
     </div>
   );
 }
@@ -307,12 +377,17 @@ function PdfPages({ asset }: { asset: Asset }) {
   </div>;
 }
 
-function PhotoDetails({ asset, onCommented }: { asset: Asset; onCommented: () => void }) {
+function PhotoDetails({ asset, metadata, onCommented, onMetadataSaved }: { asset: Asset; metadata?: AssetMetadata; onCommented: () => void; onMetadataSaved: (metadata: AssetMetadata) => void }) {
   const [comments, setComments] = useState<ArchiveComment[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [kind, setKind] = useState<CommentKind>("memory");
+  const [names, setNames] = useState(metadata?.names || "");
+  const [year, setYear] = useState(metadata?.year || "");
+  const [caption, setCaption] = useState(metadata?.caption || "");
+  const [metadataSaving, setMetadataSaving] = useState(false);
+  const [metadataMessage, setMetadataMessage] = useState("");
   const draft = useArchiveStore((state) => state.drafts[asset.id] || "");
   const setDraft = useArchiveStore((state) => state.setDraft);
 
@@ -366,14 +441,35 @@ function PhotoDetails({ asset, onCommented }: { asset: Asset; onCommented: () =>
     onCommented();
   }
 
+  async function saveMetadata(event: FormEvent) {
+    event.preventDefault();
+    setMetadataSaving(true);
+    setMetadataMessage("");
+    const response = await fetch(`/api/metadata/${asset.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ names, year, caption }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      setMetadataMessage(payload.error || "Не удалось сохранить данные.");
+      setMetadataSaving(false);
+      return;
+    }
+    const data = await response.json() as { metadata: AssetMetadata };
+    onMetadataSaved(data.metadata);
+    setMetadataMessage("Сохранено.");
+    setMetadataSaving(false);
+  }
+
   return (
     <aside className="details-panel">
       <div className="details-scroll">
         <p className="eyebrow">Карточка снимка</p>
-        <h2>{asset.title}</h2>
+        <h2>{asset.fileName}</h2>
         <dl className="technical-list">
           <div><dt>Ветвь</dt><dd>{asset.branch}</dd></div>
-          <div><dt>Дата снимка</dt><dd>Пока не установлена</dd></div>
+          <div><dt>Год снимка</dt><dd>{metadata?.year || "Не указан"}</dd></div>
           <div><dt>Файл</dt><dd>{asset.fileName}</dd></div>
           <div><dt>Параметры</dt><dd>{asset.technicalMetadata.width || "?"}×{asset.technicalMetadata.height || "?"}, {asset.technicalMetadata.extension}</dd></div>
           <div><dt>Размер</dt><dd>{formatBytes(asset.technicalMetadata.bytes)}</dd></div>
@@ -381,10 +477,14 @@ function PhotoDetails({ asset, onCommented }: { asset: Asset; onCommented: () =>
           {asset.versionHint && <div><dt>Версия</dt><dd>{asset.versionHint}</dd></div>}
         </dl>
 
-        {asset.embeddedNotes?.length ? <section className="embedded-notes" aria-labelledby="embedded-notes-title">
-          <h3 id="embedded-notes-title">Описание из файла</h3>
-          {asset.embeddedNotes.map((note, index) => <article key={`${note.source}-${index}`}><small>{note.source}{note.title ? ` · ${note.title}` : ""}</small><p>{note.body}</p></article>)}
-        </section> : null}
+        <form className="metadata-form" onSubmit={saveMetadata}>
+          <h3>Данные снимка</h3>
+          <label>Имя или имена<input value={names} onChange={(event) => setNames(event.target.value)} maxLength={500} placeholder="Например: Алла Арнольдовна, Настя" /></label>
+          <label>Год<input type="number" inputMode="numeric" min="1800" max="2100" value={year} onChange={(event) => setYear(event.target.value)} placeholder="Например: 1968" /></label>
+          <label>Подпись<textarea value={caption} onChange={(event) => setCaption(event.target.value)} maxLength={2000} rows={3} placeholder="Что видно на снимке" /></label>
+          <button className="secondary-action" disabled={metadataSaving}>{metadataSaving ? "Сохраняем…" : "Сохранить данные"}</button>
+          {metadataMessage && <p className="save-message" role="status">{metadataMessage}</p>}
+        </form>
 
         <section className="stories" aria-labelledby="stories-title">
           <h3 id="stories-title">Истории и уточнения</h3>

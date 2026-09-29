@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { ArchiveConsole } from "@/components/archive-console";
 import { getRuntimeManifest, publicAsset } from "@/lib/archive";
 import { getSession } from "@/lib/auth";
-import { commentedAssetIds } from "@/lib/db";
+import { commentedAssetIds, listAssetMetadata } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -26,5 +26,6 @@ export default async function ArchivePage() {
   const assets = manifest.assets
     .filter((asset) => !asset.sensitive || session.role === "admin")
     .map(publicAsset);
-  return <ArchiveConsole assets={assets} commentedIds={await commentedAssetIds()} session={{ displayName: session.displayName, role: session.role }} generatedAt={manifest.generatedAt} canSync={session.role === "admin" && process.env.ARCHIVE_SYNC_ENABLED === "1"} />;
+  const [commentedIds, metadata] = await Promise.all([commentedAssetIds(), listAssetMetadata()]);
+  return <ArchiveConsole assets={assets} commentedIds={commentedIds} metadata={metadata} session={{ displayName: session.displayName, role: session.role }} generatedAt={manifest.generatedAt} canSync={session.role === "admin" && process.env.ARCHIVE_SYNC_ENABLED === "1"} />;
 }

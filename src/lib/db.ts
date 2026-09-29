@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { neon } from "@neondatabase/serverless";
-import type { ArchiveComment, ArchiveCommentRecord, CommentKind } from "@/types/archive";
+import type { ArchiveComment, ArchiveCommentRecord, AssetMetadata, CommentKind } from "@/types/archive";
 import type { ArchiveSession } from "@/lib/auth";
 import { databasePath, dataRoot } from "@/lib/paths";
 import { hostedArchiveEnabled } from "@/lib/drive";
@@ -41,6 +41,13 @@ function db(): DatabaseSync {
       revision INTEGER NOT NULL DEFAULT 1
     );
     CREATE INDEX IF NOT EXISTS idx_comments_asset_created ON comments(asset_id, created_at);
+    CREATE TABLE IF NOT EXISTS asset_metadata (
+      asset_id TEXT PRIMARY KEY,
+      names TEXT NOT NULL DEFAULT '' CHECK(length(names) <= 500),
+      year TEXT NOT NULL DEFAULT '' CHECK(length(year) <= 40),
+      caption TEXT NOT NULL DEFAULT '' CHECK(length(caption) <= 2000),
+      updated_at TEXT NOT NULL
+    );
   `);
   return database;
 }
@@ -135,6 +142,43 @@ export async function commentedAssetIds(): Promise<string[]> {
   return rows.map((row) => row.asset_id);
 }
 
+type MetadataRow = { asset_id: string; names: string; year: string; caption: string; updated_at: string };
+
+function mapMetadata(row: MetadataRow): AssetMetadata {
+  return { assetId: row.asset_id, names: row.names, year: row.year, caption: row.caption, updatedAt: row.updated_at };
+}
+
+export async function listAssetMetadata(): Promise<AssetMetadata[]> {
+  if (!commentStorageAvailable()) return [];
+  if (hostedArchiveEnabled()) {
+    const sql = await hostedSql();
+    const rows = await sql`SELECT asset_id, names, year, caption, updated_at FROM asset_metadata` as MetadataRow[];
+    return rows.map(mapMetadata);
+  }
+  const rows = db().prepare("SELECT asset_id, names, year, caption, updated_at FROM asset_metadata").all() as unknown as MetadataRow[];
+  return rows.map(mapMetadata);
+}
+
+export async function saveAssetMetadata(assetId: string, values: Pick<AssetMetadata, "names" | "year" | "caption">): Promise<AssetMetadata> {
+  if (!commentStorageAvailable()) throw new Error("Metadata storage is not configured");
+  const updatedAt = new Date().toISOString();
+  if (hostedArchiveEnabled()) {
+    const sql = await hostedSql();
+    await sql`
+      INSERT INTO asset_metadata (asset_id, names, year, caption, updated_at)
+      VALUES (${assetId}, ${values.names}, ${values.year}, ${values.caption}, ${updatedAt})
+      ON CONFLICT (asset_id) DO UPDATE SET names = EXCLUDED.names, year = EXCLUDED.year, caption = EXCLUDED.caption, updated_at = EXCLUDED.updated_at
+    `;
+  } else {
+    db().prepare(`
+      INSERT INTO asset_metadata (asset_id, names, year, caption, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(asset_id) DO UPDATE SET names = excluded.names, year = excluded.year, caption = excluded.caption, updated_at = excluded.updated_at
+    `).run(assetId, values.names, values.year, values.caption, updatedAt);
+  }
+  return { assetId, ...values, updatedAt };
+}
+
 /** Full comment records are intentionally exposed only to the owner's server page. */
 export async function listAllComments(): Promise<ArchiveCommentRecord[]> {
   if (!commentStorageAvailable()) return [];
@@ -190,6 +234,13 @@ async function hostedSql() {
         revision INTEGER NOT NULL DEFAULT 1
       )`;
       await schemaSql`CREATE INDEX IF NOT EXISTS idx_comments_asset_created ON comments(asset_id, created_at)`;
+      await schemaSql`CREATE TABLE IF NOT EXISTS asset_metadata (
+        asset_id TEXT PRIMARY KEY,
+        names TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        caption TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+      )`;
     })();
   }
   await hostedSchemaReady;
