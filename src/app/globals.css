@@ -118,8 +118,7 @@ textarea { min-height: 132px; resize: vertical; }
 .photo-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(32,29,22,.07); }
 .photo-frame { position: relative; display: grid; place-items: center; overflow: hidden; background: linear-gradient(105deg, #d9d2c4 25%, #eee8dd 40%, #d9d2c4 58%); background-size: 240% 100%; animation: frame-shimmer 1.25s ease-in-out infinite; }
 .photo-frame.is-loaded { animation: none; background: #d9d2c4; }
-.photo-frame img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; filter: saturate(.94); opacity: 0; transition: opacity 280ms ease, filter 240ms ease, transform 550ms cubic-bezier(.16,1,.3,1); }
-.photo-frame.is-loaded img { opacity: 1; }
+.photo-frame img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; filter: saturate(.94); opacity: 1; transition: filter 240ms ease, transform 550ms cubic-bezier(.16,1,.3,1); }
 .photo-card:hover img, .photo-card-open:focus-visible img { filter: brightness(.48) saturate(.85); transform: scale(1.025); }
 .photo-description { position: absolute; inset: 0; display: grid; align-content: end; gap: 3px; padding: clamp(12px, 5%, 22px); overflow: hidden; color: #fffdf7; font: .82rem/1.45 var(--sans); text-align: left; opacity: 0; transform: translateY(8px); transition: opacity 220ms ease, transform 220ms ease; text-shadow: 0 1px 2px rgba(0,0,0,.7); }
 .photo-description strong { font: 600 1rem/1.3 var(--serif); }
