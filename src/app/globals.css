@@ -112,7 +112,7 @@ textarea { min-height: 132px; resize: vertical; }
 .photo-grid.compact .grid-version-slider span { display: none; }
 .photo-grid.compact .grid-version-slider small { font-size: .5rem; }
 .photo-grid.compact .photo-description { display: none; }
-.photo-grid.is-loading .photo-card, .album-section.is-loading .photo-card { opacity: 0; pointer-events: none; }
+.photo-grid.is-loading .photo-card, .album-section.is-loading .photo-card { opacity: 1; }
 .photo-grid.is-ready .photo-card, .album-section.is-ready .photo-card { opacity: 0; animation: card-enter 420ms cubic-bezier(.16,1,.3,1) forwards; animation-delay: calc(var(--order) * 24ms); }
 .photo-card-open { display: grid; padding: 0; border: 0; background: transparent; text-align: left; cursor: zoom-in; }
 .photo-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(32,29,22,.07); }
