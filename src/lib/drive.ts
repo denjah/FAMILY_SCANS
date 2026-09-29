@@ -59,14 +59,18 @@ async function child(parentId: string, name: string, folder = false): Promise<Dr
   const key = `${parentId}:${folder ? "folder" : "file"}:${name}`;
   const cached = childCache.get(key);
   if (cached) return cached;
-  const q = `'${escaped(parentId)}' in parents and name = '${escaped(name)}' and trashed = false${folder ? ` and mimeType = '${FOLDER_MIME}'` : ""}`;
-  const params = new URLSearchParams({ q, fields: "files(id,name,mimeType)", pageSize: "10" });
-  const response = await driveFetch(`files?${params}`);
-  const body = await response.json() as { files?: DriveFile[] };
-  const file = body.files?.[0];
+  const file = (await children(parentId, name, folder))[0];
   if (!file) throw new Error(`Drive file not found: ${name}`);
   childCache.set(key, file);
   return file;
+}
+
+async function children(parentId: string, name: string, folder = false): Promise<DriveFile[]> {
+  const q = `'${escaped(parentId)}' in parents and name = '${escaped(name)}' and trashed = false${folder ? ` and mimeType = '${FOLDER_MIME}'` : ""}`;
+  const params = new URLSearchParams({ q, fields: "files(id,name,mimeType)", pageSize: "100" });
+  const response = await driveFetch(`files?${params}`);
+  const body = await response.json() as { files?: DriveFile[] };
+  return body.files || [];
 }
 
 export async function downloadDriveFile(fileId: string): Promise<Uint8Array> {
@@ -83,9 +87,16 @@ export async function downloadHostedManifest(): Promise<Uint8Array> {
 export async function downloadHostedMedia(assetId: string, page?: number): Promise<Uint8Array> {
   const root = process.env.GOOGLE_DRIVE_FOLDER_ID;
   if (!root) throw new Error("GOOGLE_DRIVE_FOLDER_ID is not configured");
-  const media = await child(root, "media", true);
-  const file = page === undefined
-    ? await child(media.id, `${assetId}.webp`)
-    : await child((await child(media.id, assetId, true)).id, `page-${String(page + 1).padStart(3, "0")}.webp`);
-  return downloadDriveFile(file.id);
+  let failure: unknown;
+  for (const media of await children(root, "media", true)) {
+    try {
+      const file = page === undefined
+        ? await child(media.id, `${assetId}.webp`)
+        : await child((await child(media.id, assetId, true)).id, `page-${String(page + 1).padStart(3, "0")}.webp`);
+      return await downloadDriveFile(file.id);
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure || new Error(`Drive preview not found: ${assetId}`);
 }
