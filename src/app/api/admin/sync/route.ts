@@ -23,9 +23,9 @@ export async function POST(request: NextRequest) {
   running = true;
   try {
     await runScript("index-archive.ts");
-    await runScript("export-screen-archive.ts", { ...process.env, ARCHIVE_SCREEN_EXPORT_REPLACE: "1" });
+    await runScript("export-screen-archive.ts");
     await runScript("sync-screen-archive.ts");
-    return NextResponse.json({ message: "Готово: папки пересканированы, экранные версии загружены. Веб-архив обновится в течение 5 минут." }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ message: "Готово: группы и главные фото пересчитаны, в Drive отправлены только новые или изменённые экранные копии. Веб-архив обновится в течение 5 минут." }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("Archive sync failed", error);
     return NextResponse.json({ error: "Синхронизация не завершилась. Проверьте настройки Google Drive и журнал локального сервера." }, { status: 500 });

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { neon } from "@neondatabase/serverless";
-import type { ArchiveComment, ArchiveCommentRecord, AssetMetadata, CommentKind } from "@/types/archive";
+import type { ArchiveComment, ArchiveCommentPreview, ArchiveCommentRecord, AssetMetadata, CommentKind } from "@/types/archive";
 import type { ArchiveSession } from "@/lib/auth";
 import { databasePath, dataRoot } from "@/lib/paths";
 import { hostedArchiveEnabled } from "@/lib/drive";
@@ -13,10 +13,24 @@ function hostedDatabaseUrl(): string | null {
   return process.env.DATABASE_URL || process.env.POSTGRES_URL || null;
 }
 
+function hostedRuntime(): boolean {
+  return process.env.VERCEL === "1"
+    || Boolean(process.env.VERCEL_ENV)
+    || (process.env.NODE_ENV === "production" && hostedArchiveEnabled());
+}
+
+function useHostedDatabase(): boolean {
+  return Boolean(hostedDatabaseUrl() && (hostedRuntime() || hostedArchiveEnabled()));
+}
+
 export function commentStorageAvailable(): boolean {
   // SQLite is reliable for the local archive only. Hosted deployments must use
   // managed Postgres, because a Vercel function's filesystem is ephemeral.
-  return !hostedArchiveEnabled() || Boolean(hostedDatabaseUrl());
+  return !hostedRuntime() || Boolean(hostedDatabaseUrl());
+}
+
+export function hostedCommentDatabase(): boolean {
+  return useHostedDatabase();
 }
 
 function db(): DatabaseSync {
@@ -80,7 +94,7 @@ function mapComment(row: CommentRow, session: ArchiveSession): ArchiveComment {
 
 export async function listComments(assetId: string, session: ArchiveSession): Promise<ArchiveComment[]> {
   if (!commentStorageAvailable()) return [];
-  if (hostedArchiveEnabled()) {
+  if (useHostedDatabase()) {
     const sql = await hostedSql();
     const rows = await sql`
       SELECT id, asset_id, author_id, author_display_name, kind, body, created_at, updated_at, revision
@@ -104,7 +118,7 @@ export async function createComment(
 ): Promise<ArchiveComment> {
   if (!commentStorageAvailable()) throw new Error("Comment storage is not configured");
   const now = new Date().toISOString();
-  if (hostedArchiveEnabled()) {
+  if (useHostedDatabase()) {
     const sql = await hostedSql();
     await sql`
       INSERT INTO comments (id, asset_id, author_id, author_display_name, kind, body, created_at, updated_at)
@@ -131,7 +145,7 @@ export async function createComment(
 
 export async function commentedAssetIds(): Promise<string[]> {
   if (!commentStorageAvailable()) return [];
-  if (hostedArchiveEnabled()) {
+  if (useHostedDatabase()) {
     const sql = await hostedSql();
     const rows = await sql`SELECT DISTINCT asset_id FROM comments WHERE deleted_at IS NULL` as Array<{ asset_id: string }>;
     return rows.map((row) => row.asset_id);
@@ -150,7 +164,7 @@ function mapMetadata(row: MetadataRow): AssetMetadata {
 
 export async function listAssetMetadata(): Promise<AssetMetadata[]> {
   if (!commentStorageAvailable()) return [];
-  if (hostedArchiveEnabled()) {
+  if (useHostedDatabase()) {
     const sql = await hostedSql();
     const rows = await sql`SELECT asset_id, names, year, caption, updated_at FROM asset_metadata` as MetadataRow[];
     return rows.map(mapMetadata);
@@ -162,7 +176,7 @@ export async function listAssetMetadata(): Promise<AssetMetadata[]> {
 export async function saveAssetMetadata(assetId: string, values: Pick<AssetMetadata, "names" | "year" | "caption">): Promise<AssetMetadata> {
   if (!commentStorageAvailable()) throw new Error("Metadata storage is not configured");
   const updatedAt = new Date().toISOString();
-  if (hostedArchiveEnabled()) {
+  if (useHostedDatabase()) {
     const sql = await hostedSql();
     await sql`
       INSERT INTO asset_metadata (asset_id, names, year, caption, updated_at)
@@ -182,7 +196,7 @@ export async function saveAssetMetadata(assetId: string, values: Pick<AssetMetad
 /** Full comment records are intentionally exposed only to the owner's server page. */
 export async function listAllComments(): Promise<ArchiveCommentRecord[]> {
   if (!commentStorageAvailable()) return [];
-  if (hostedArchiveEnabled()) {
+  if (useHostedDatabase()) {
     const sql = await hostedSql();
     const rows = await sql`
       SELECT id, asset_id, author_display_name, kind, body, created_at, updated_at, revision
@@ -212,6 +226,107 @@ export async function listAllComments(): Promise<ArchiveCommentRecord[]> {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     revision: row.revision,
+  }));
+}
+
+export interface CommentSyncRecord extends ArchiveCommentRecord {
+  authorId: string;
+  deletedAt: string | null;
+}
+
+/** Full records for authenticated synchronization between the local and hosted stores. */
+export async function listCommentsForSync(): Promise<CommentSyncRecord[]> {
+  if (!commentStorageAvailable()) return [];
+  if (useHostedDatabase()) {
+    const sql = await hostedSql();
+    const rows = await sql`
+      SELECT id, asset_id, author_id, author_display_name, kind, body, created_at, updated_at, revision, deleted_at
+      FROM comments ORDER BY created_at ASC
+    ` as Array<CommentRow & { deleted_at: string | null }>;
+    return rows.map((row) => ({
+      id: row.id, assetId: row.asset_id, authorId: row.author_id,
+      authorDisplayName: row.author_display_name, kind: row.kind, body: row.body,
+      createdAt: row.created_at, updatedAt: row.updated_at, revision: row.revision,
+      deletedAt: row.deleted_at,
+    }));
+  }
+  const rows = db().prepare(`
+    SELECT id, asset_id, author_id, author_display_name, kind, body, created_at, updated_at, revision, deleted_at
+    FROM comments ORDER BY created_at ASC
+  `).all() as unknown as Array<CommentRow & { deleted_at: string | null }>;
+  return rows.map((row) => ({
+    id: row.id, assetId: row.asset_id, authorId: row.author_id,
+    authorDisplayName: row.author_display_name, kind: row.kind, body: row.body,
+    createdAt: row.created_at, updatedAt: row.updated_at, revision: row.revision,
+    deletedAt: row.deleted_at,
+  }));
+}
+
+/** Merge without deleting remote data; matching IDs retain the newest revision. */
+export async function mergeCommentsForSync(records: CommentSyncRecord[]): Promise<void> {
+  if (!commentStorageAvailable()) throw new Error("Comment storage is not configured");
+  if (useHostedDatabase()) {
+    const sql = await hostedSql();
+    for (const row of records) {
+      await sql`
+        INSERT INTO comments (id, asset_id, author_id, author_display_name, kind, body, created_at, updated_at, deleted_at, revision)
+        VALUES (${row.id}, ${row.assetId}, ${row.authorId}, ${row.authorDisplayName}, ${row.kind}, ${row.body}, ${row.createdAt}, ${row.updatedAt}, ${row.deletedAt}, ${row.revision})
+        ON CONFLICT (id) DO UPDATE SET
+          asset_id = EXCLUDED.asset_id, author_id = EXCLUDED.author_id,
+          author_display_name = EXCLUDED.author_display_name, kind = EXCLUDED.kind,
+          body = EXCLUDED.body, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
+          deleted_at = EXCLUDED.deleted_at, revision = EXCLUDED.revision
+        WHERE EXCLUDED.revision > comments.revision OR (EXCLUDED.revision = comments.revision AND EXCLUDED.updated_at > comments.updated_at)
+      `;
+    }
+    return;
+  }
+  const insert = db().prepare(`
+    INSERT INTO comments (id, asset_id, author_id, author_display_name, kind, body, created_at, updated_at, deleted_at, revision)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      asset_id=excluded.asset_id, author_id=excluded.author_id,
+      author_display_name=excluded.author_display_name, kind=excluded.kind,
+      body=excluded.body, created_at=excluded.created_at, updated_at=excluded.updated_at,
+      deleted_at=excluded.deleted_at, revision=excluded.revision
+    WHERE excluded.revision > comments.revision OR (excluded.revision = comments.revision AND excluded.updated_at > comments.updated_at)
+  `);
+  db().exec("BEGIN");
+  try {
+    for (const row of records) insert.run(
+      row.id, row.assetId, row.authorId, row.authorDisplayName, row.kind, row.body,
+      row.createdAt, row.updatedAt, row.deletedAt, row.revision,
+    );
+    db().exec("COMMIT");
+  } catch (error) {
+    db().exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/** Minimal active comment data used to show comments beside archive grid items. */
+export async function listCommentPreviews(): Promise<ArchiveCommentPreview[]> {
+  if (!commentStorageAvailable()) return [];
+  let rows: Array<Pick<CommentRow, "id" | "asset_id" | "author_display_name" | "kind" | "body" | "created_at">>;
+  if (useHostedDatabase()) {
+    const sql = await hostedSql();
+    rows = await sql`
+      SELECT id, asset_id, author_display_name, kind, body, created_at
+      FROM comments WHERE deleted_at IS NULL ORDER BY created_at ASC
+    ` as typeof rows;
+  } else {
+    rows = db().prepare(`
+      SELECT id, asset_id, author_display_name, kind, body, created_at
+      FROM comments WHERE deleted_at IS NULL ORDER BY created_at ASC
+    `).all() as unknown as typeof rows;
+  }
+  return rows.map((row) => ({
+    id: row.id,
+    assetId: row.asset_id,
+    authorDisplayName: row.author_display_name,
+    kind: row.kind,
+    body: row.body,
+    createdAt: row.created_at,
   }));
 }
 

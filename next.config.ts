@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  outputFileTracingIncludes: {
+    "/api/decor/*": ["./elements/*.svg"],
+    "/api/branch-icon/*": ["./ICONS/*.jpg"],
+  },
   async headers() {
     return [
       {

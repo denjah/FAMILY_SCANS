@@ -43,7 +43,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Индексация и публикация
 
 - Локальное обновление каталога: `pnpm index`.
-- Для публикации экранной копии: `ARCHIVE_SCREEN_EXPORT_REPLACE=1 pnpm export:screen`, затем `pnpm sync:screen`. Когда WebP уже находятся на Drive и изменился только индекс, используйте `ARCHIVE_SCREEN_SYNC_MANIFEST_ONLY=1 pnpm sync:screen`.
+- Для публикации экранной копии: `pnpm index`, затем инкрементальные `pnpm export:screen` и `pnpm sync:screen`. Эти команды пересчитывают Bridge-группы и главные фото, но не пересоздают и не загружают неизменённые WebP. `ARCHIVE_SCREEN_EXPORT_REPLACE=1` используйте только для намеренного полного локального экспорта. Когда изменился только индекс, можно применить `ARCHIVE_SCREEN_SYNC_MANIFEST_ONLY=1 pnpm sync:screen`.
 - Синхронизация с Google Drive является внешней записью. Запускайте её только по явному запросу пользователя на публикацию или синхронизацию сайта.
 - Для записи на Drive доступен OAuth: добавьте `GOOGLE_DRIVE_OAUTH_CLIENT_ID` и `GOOGLE_DRIVE_OAUTH_CLIENT_SECRET` в `.env.local`, выполните `pnpm authorize:drive`; refresh token сохраняется только локально. Сервисный аккаунт остаётся поддерживаемой альтернативой.
 - Перед сообщением о публикации проверьте локальную индексацию и доступность опубликованного сайта или manifest. Не заявляйте о полной проверке, если она не выполнялась.

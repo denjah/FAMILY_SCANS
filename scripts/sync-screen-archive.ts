@@ -5,7 +5,7 @@ import path from "node:path";
 
 type ServiceAccount = { client_email: string; private_key: string; token_uri?: string };
 type OAuthClient = { clientId: string; clientSecret: string; refreshToken: string };
-type DriveFile = { id: string; name: string; mimeType?: string };
+type DriveFile = { id: string; name: string; mimeType?: string; md5Checksum?: string };
 
 const projectRoot = process.cwd();
 const exportRoot = path.resolve(process.env.ARCHIVE_SCREEN_EXPORT_ROOT || "Z:/SCAN/WEB_SCREEN_ARCHIVE");
@@ -89,7 +89,7 @@ async function children(parentId: string): Promise<DriveFile[]> {
   let pageToken: string | undefined;
   do {
     const q = `'${escapeQuery(parentId)}' in parents and trashed = false`;
-    const response = await driveFetch(`files?${new URLSearchParams({ q, fields: "nextPageToken,files(id,name,mimeType)", pageSize: "1000", ...(pageToken ? { pageToken } : {}) })}`);
+    const response = await driveFetch(`files?${new URLSearchParams({ q, fields: "nextPageToken,files(id,name,mimeType,md5Checksum)", pageSize: "1000", ...(pageToken ? { pageToken } : {}) })}`);
     const body = await response.json() as { files?: DriveFile[]; nextPageToken?: string };
     files.push(...(body.files || []));
     pageToken = body.nextPageToken;
@@ -116,10 +116,12 @@ function mimeFor(file: string): string {
   return "application/octet-stream";
 }
 
-async function uploadFile(parentId: string, absolutePath: string, name: string): Promise<void> {
+async function uploadFile(parentId: string, absolutePath: string, name: string): Promise<boolean> {
   const existing = await findChild(parentId, name, false);
-  if (existing && process.env.ARCHIVE_SCREEN_SYNC_NEW_ONLY === "1") return;
+  if (existing && process.env.ARCHIVE_SCREEN_SYNC_NEW_ONLY === "1") return false;
   const bytes = await fs.readFile(absolutePath);
+  const checksum = crypto.createHash("md5").update(bytes).digest("hex");
+  if (existing?.md5Checksum === checksum) return false;
   const endpoint = existing ? `upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media` : "upload/drive/v3/files?uploadType=multipart";
   const upload = async (method: "PATCH" | "POST", body: Buffer, contentType: string, retry = true): Promise<void> => {
     const response = await fetch(`https://www.googleapis.com/${endpoint}`, { method, headers: { Authorization: `Bearer ${await driveToken(!retry)}`, "Content-Type": contentType }, body: body as unknown as BodyInit });
@@ -128,22 +130,30 @@ async function uploadFile(parentId: string, absolutePath: string, name: string):
   };
   if (existing) {
     await upload("PATCH", bytes, mimeFor(name));
-    return;
+    return true;
   }
   const boundary = `archive-${crypto.randomUUID()}`;
   const metadata = JSON.stringify({ name, parents: [parentId] });
   const body = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Type: ${mimeFor(name)}\r\n\r\n`), bytes, Buffer.from(`\r\n--${boundary}--\r\n`)]);
   await upload("POST", body, `multipart/related; boundary=${boundary}`);
+  return true;
 }
 
-async function syncFolder(driveParent: string, localFolder: string): Promise<number> {
-  let uploaded = 0;
+async function syncFolder(driveParent: string, localFolder: string): Promise<{ uploaded: number; unchanged: number }> {
+  const counts = { uploaded: 0, unchanged: 0 };
   for (const entry of await fs.readdir(localFolder, { withFileTypes: true })) {
+    if (entry.name === ".export-state.json") continue;
     const localPath = path.join(localFolder, entry.name);
-    if (entry.isDirectory()) uploaded += await syncFolder(await ensureFolder(driveParent, entry.name), localPath);
-    else if (entry.isFile()) { await uploadFile(driveParent, localPath, entry.name); uploaded += 1; }
+    if (entry.isDirectory()) {
+      const child = await syncFolder(await ensureFolder(driveParent, entry.name), localPath);
+      counts.uploaded += child.uploaded;
+      counts.unchanged += child.unchanged;
+    } else if (entry.isFile()) {
+      if (await uploadFile(driveParent, localPath, entry.name)) counts.uploaded += 1;
+      else counts.unchanged += 1;
+    }
   }
-  return uploaded;
+  return counts;
 }
 
 async function main(): Promise<void> {
@@ -164,10 +174,10 @@ async function main(): Promise<void> {
         return () => accessToken(account);
       })());
   const manifestOnly = process.env.ARCHIVE_SCREEN_SYNC_MANIFEST_ONLY === "1";
-  const uploaded = manifestOnly
-    ? (await uploadFile(rootId, path.join(exportRoot, "archive-index.json"), "archive-index.json"), 1)
+  const counts = manifestOnly
+    ? { uploaded: Number(await uploadFile(rootId, path.join(exportRoot, "archive-index.json"), "archive-index.json")), unchanged: 0 }
     : await syncFolder(rootId, exportRoot);
-  process.stdout.write(`Drive sync complete: ${uploaded} files uploaded or updated.\n`);
+  process.stdout.write(`Drive sync complete: ${counts.uploaded} files uploaded or updated, ${counts.unchanged} unchanged.\n`);
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

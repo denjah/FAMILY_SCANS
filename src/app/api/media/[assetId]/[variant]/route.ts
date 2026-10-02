@@ -44,7 +44,10 @@ export async function GET(
     return new NextResponse("Not found", { status: 404 });
   }
 
-  if (hostedArchiveEnabled()) {
+  // The development catalogue reads the freshly generated local manifest. It
+  // must also render previews locally: Drive may still contain an older screen
+  // export while the curator is checking newly added photographs.
+  if (hostedArchiveEnabled() && process.env.NODE_ENV !== "development") {
     try {
       const body = await downloadHostedMedia(assetId, asset.technicalMetadata.mimeType === "application/pdf" ? pageFor(request, asset) : undefined);
       const output = new ArrayBuffer(body.byteLength);

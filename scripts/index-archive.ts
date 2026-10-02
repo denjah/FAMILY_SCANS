@@ -9,7 +9,9 @@ import type { ArchiveManifest, Asset, AssetKind, AssetVersion, EmbeddedNote } fr
 
 const ARCHIVE_ROOT = path.resolve(process.env.ARCHIVE_ROOT || "Z:/SCAN");
 const DATA_ROOT = path.resolve(process.env.ARCHIVE_DATA_ROOT || "Z:/SCAN/SYSTEM_WEB/data");
-const INCLUDE_ROOTS = ["ALENA", "DAN", "DEN", "PAPA", "SCANS_2025", "БАБУШКА"];
+// `SCANS_2025` is the curator's technical intake folder.  Its files stay on
+// disk, but must never become a public family branch.
+const INCLUDE_ROOTS = ["ALENA", "DAN", "DEN", "PAPA", "БАБУШКА"];
 const BRANCH_LABELS: Record<string, string> = { ALENA: "МАМА" };
 const HIDDEN_FROM_CATALOG = new Set([
   "PAPA/Илан_Трудовая-книжка.jpg",

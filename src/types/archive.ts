@@ -83,6 +83,9 @@ export interface ArchiveCommentRecord {
   revision: number;
 }
 
+/** Comment fields needed to show stories in the archive grid. */
+export type ArchiveCommentPreview = Pick<ArchiveCommentRecord, "id" | "assetId" | "authorDisplayName" | "kind" | "body" | "createdAt">;
+
 /** Curator-entered information shown with a photograph. */
 export interface AssetMetadata {
   assetId: string;
